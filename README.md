@@ -1,5 +1,6 @@
 # DemoscenePackBuilder
-Easily build and download demoscene packs
+Easily build and download demoscene packs.
+Powered by [Demozoo](https://www.demozoo.org) data.
 
 ## Installation
 For now, a Python venv is needed.
