@@ -1,8 +1,11 @@
 import errno
+from zipfile import ZipFile
 
 import requests
 import argparse
 import sys
+
+from pyunpack import Archive
 from tqdm import tqdm
 from datetime import datetime
 from os import path, makedirs, remove, listdir, rmdir
@@ -31,6 +34,77 @@ def dir_path(string):
             if exception.errno != errno.EEXIST:
                 raise
 
+def check_file_signature(file_path):
+    """Return the filetype signature"""
+    if not path.isfile(file_path):
+        return None
+    with open(file_path, 'rb') as f:
+        signature = f.read(4)
+
+    sig_ext_map = {
+        b'PK\x03\x04': '.zip',
+        b'PK\x05\x06': '.zip',
+        b'PK\x07\x08': '.zip',
+        b'Rar!\x1A\x07\x00': '.rar',
+        b'Rar!\x1A\x07\x01\x00': '.rar',
+        b'7z\xBC\xAF\x27\x1C': '.7z',
+        b'\x1F\x8B\x08': '.gz',
+        b'BZh': '.bz2',
+        b'-lh': '.lha',
+        b'LZX': '.lzx',
+        b'\xFD7zXZ\x00': '.xz'
+    }
+
+    if signature in sig_ext_map:
+        return sig_ext_map[signature]
+    else:
+        return None
+
+
+def verify_extraction(expected_files, destination_dir):
+    """Verify if all expected files have been extracted."""
+    for file in expected_files:
+        extracted_file_path = path.join(destination_dir, file)
+        if not path.exists(extracted_file_path):
+            return False, file
+    return True, None
+
+
+def extract_with_progress(archive_file, destination_dir):
+    file_type = check_file_signature(archive_file)
+    if not file_type in ['.zip', '.rar', '.7z', '.lha', '.lzx', '.tar', '.gz', '.bz2']:
+        print(f'File {archive_file} is not a valid archive file. Skipping extraction.')
+        return
+    # Ensure the destination directory exists
+    makedirs(destination_dir, exist_ok=True)
+
+    # For ZIP files, get a list of files in the archive
+    if file_type == '.zip':
+        with ZipFile(archive_file, 'r') as zip_ref:
+            file_list = zip_ref.namelist()
+            with tqdm(total=len(file_list), desc="Extracting") as pbar:
+                for file in file_list:
+                    zip_ref.extract(file, path=destination_dir)
+                    pbar.update(1)
+
+        # Verify extraction
+        success, failed_file = verify_extraction(file_list, destination_dir)
+        if success:
+            print(f"All files extracted successfully for {archive_file}. Removing archive.")
+            remove(archive_file)
+        else:
+            print(f"Extraction failed for {archive_file}. Missing file: {failed_file}")
+
+    else:
+        # For other formats, we'll need a different approach since patool/pyunpack doesn't directly expose file lists
+        Archive(archive_file).extractall(destination_dir)
+        # Verify extraction by checking the presence of at least one file
+        extracted_files = listdir(destination_dir)
+        if extracted_files:
+            print(f"Extraction complete for: {archive_file}. Removing archive.")
+            remove(archive_file)
+        else:
+            print(f"Extraction failed for: {archive_file}. No files were extracted.")
 
 
 def fuzzy_search(query, platforms):
@@ -96,7 +170,6 @@ def get_prods_list(**kwargs):
 
     print('Fetching data from Demozoo...')
     fetch_url = DEMOZOO_API_ENDPOINT + DEMOZOO_PRODS_ENDPOINT + '?' + filters_str + "&fields=" + fields
-    print(fetch_url)
     req = requests.get(fetch_url)
     data = req.json()
     results = []
@@ -120,7 +193,7 @@ def get_prods_list(**kwargs):
 
     return results
 
-def download_prod(prod, cur_prod=1, total_prods=1, root_dir=None):
+def download_prod(prod, cur_prod=1, total_prods=1, root_dir=None, extract=False):
     prod_name = prod['title']
     if len(prod['author_nicks']) > 0:
         author_field = prod['author_nicks'][0]['name']
@@ -128,11 +201,12 @@ def download_prod(prod, cur_prod=1, total_prods=1, root_dir=None):
         author_field = '_UNSORTED'
 
     download_links = []
-    print(len(download_links))
     if len(prod['download_links']) > 0:
+        print(f'Found {len(download_links)} links.')
         for link in prod['download_links']:
             download_links.append(link['url'])
     else:
+        print('No download links found. Skipping entry.')
         return
 
     release_date = prod['release_date']
@@ -183,6 +257,9 @@ def download_prod(prod, cur_prod=1, total_prods=1, root_dir=None):
                 continue
 
             print(f"Succesfully downloaded {file_name}!")
+            if extract:
+                extract_with_progress(file_path, path.join(str(folder_path), prod_name))
+
 
             break  # Exit the loop since the download was successful
         except Exception as e:
@@ -202,14 +279,22 @@ def main(arguments):
 
     else:
         # Remove unused arguments
-        for arg in ['list_platforms']: delattr(arguments, arg)
+        should_extract = arguments.extract
+        for arg in ['list_platforms', 'extract']: delattr(arguments, arg)
         # Get prods list using remaining arguments
         args_dict = vars(arguments)
         prods = get_prods_list(**args_dict)
 
+
         total_num_prods = len(prods)
         for num, prod in enumerate(prods, start=1):
-            download_prod(prod, cur_prod=num, total_prods=total_num_prods, root_dir=arguments.output_dir)
+            download_prod(prod,
+                          cur_prod=num,
+                          total_prods=total_num_prods,
+                          root_dir=arguments.output_dir,
+                          extract=should_extract
+                          )
+
 
         print("")
         print("--- All done! :) ---")
@@ -224,6 +309,12 @@ if __name__ == '__main__':
                         "--list_platforms",
                         action="store_true",
                         help="List all available platforms on Demozoo."
+                        )
+
+    parser.add_argument("-x",
+                        "--extract",
+                        action="store_true",
+                        help="Extract files and remove original archive."
                         )
 
     # Create a mutually exclusive group
