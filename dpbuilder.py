@@ -1,4 +1,5 @@
 import errno
+from time import sleep
 from zipfile import ZipFile
 
 import requests
@@ -162,6 +163,12 @@ def get_prods_list(**kwargs):
     if 'competition_place' in kwargs and kwargs['competition_place'] is not None:
         filters.append(f"competition_placing_min={kwargs['competition_place']}")
 
+    if len(filters) < 3:
+        quit('\n\n'
+             'You did not specify any filters. \n'
+             'This tool is not meant to download the whole archive of a given platform.\n'
+             'Please provide filters (use -h to see which are available).\n')
+
     # join the fields to a string
     fields = ','.join(FIELDS)
 
@@ -174,7 +181,9 @@ def get_prods_list(**kwargs):
     data = req.json()
     results = []
     entry_count = data['count']
+
     print(f'Found {entry_count} entries.')
+
     next_url = data['next']
     current_page = 1
     if next_url is not None:
@@ -186,6 +195,7 @@ def get_prods_list(**kwargs):
             next_url = data['next']
             current_page += 1
         results.extend(data['results'])
+        sleep(2)  # Rudimentary rate limiting
     else:
         results.extend(data['results'])
 
@@ -294,6 +304,7 @@ def main(arguments):
                           root_dir=arguments.output_dir,
                           extract=should_extract
                           )
+            sleep(1) # Rudimentary rate limiting
 
 
         print("")
